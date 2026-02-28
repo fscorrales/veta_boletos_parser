@@ -18,15 +18,66 @@ Salida:
     - Guarda un Excel "resumen_consolidado.xlsx" dentro de la misma carpeta.
 """
 
+import argparse
+import inspect
+import os
 import sys
 from pathlib import Path
 
 import pandas as pd
 
 # Importar la función de parseo del script anterior
-from consolidar_boletos import parse_boleto
+from parse_boleto import parse_boleto
 
 
+# --------------------------------------------------
+def validate_folder(path):
+    # 1. Verificar existencia
+    if not os.path.exists(path):
+        raise argparse.ArgumentTypeError(f"La carpeta '{path}' no existe")
+
+    # 2. Verificar que sea un directorio y no un archivo
+    if not os.path.isdir(path):
+        raise argparse.ArgumentTypeError(
+            f"'{path}' no es una carpeta (puede ser un archivo)"
+        )
+
+    # 3. Verificar que contenga al menos un HTML/HTM
+    html_files = [f for f in os.listdir(path) if f.lower().endswith((".htm", ".html"))]
+    if not html_files:
+        raise argparse.ArgumentTypeError(
+            f"La carpeta '{path}' no contiene archivos HTML/HTM"
+        )
+
+    return path
+
+
+# --------------------------------------------------
+def get_args():
+    """Get command-line arguments"""
+
+    path = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+
+    parser = argparse.ArgumentParser(
+        description="Consolidate multiple Veta Capital S.A. HTML trade confirmations into a single DataFrame",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    parser.add_argument(
+        "-d",
+        "--dir",
+        metavar="folder_path",
+        default=os.path.join(path, "boletos"),
+        type=validate_folder,
+        help="Path a la carpeta que contiene los archivos HTML/HTM de boletos",
+    )
+
+    args = parser.parse_args()
+
+    return args
+
+
+# --------------------------------------------------
 def consolidar_carpeta(carpeta: str, extensiones=(".htm", ".html")) -> pd.DataFrame:
     """
     Lee todos los archivos HTML de `carpeta` y fusiona los DataFrames de
@@ -52,7 +103,8 @@ def consolidar_carpeta(carpeta: str, extensiones=(".htm", ".html")) -> pd.DataFr
 
     # Buscar archivos HTML (case-insensitive en la extensión)
     archivos = [
-        f for f in sorted(carpeta.iterdir())
+        f
+        for f in sorted(carpeta.iterdir())
         if f.is_file() and f.suffix.lower() in extensiones
     ]
 
@@ -64,7 +116,7 @@ def consolidar_carpeta(carpeta: str, extensiones=(".htm", ".html")) -> pd.DataFr
     print(f"📄  Archivos encontrados: {len(archivos)}\n")
 
     resumenes = []
-    errores   = []
+    errores = []
 
     for archivo in archivos:
         try:
@@ -104,7 +156,10 @@ def consolidar_carpeta(carpeta: str, extensiones=(".htm", ".html")) -> pd.DataFr
     return df_consolidado
 
 
-def guardar_excel(df: pd.DataFrame, carpeta: str, nombre: str = "resumen_consolidado.xlsx") -> Path:
+# --------------------------------------------------
+def guardar_excel(
+    df: pd.DataFrame, carpeta: str, nombre: str = "resumen_consolidado.xlsx"
+) -> Path:
     """Guarda el DataFrame consolidado en un Excel dentro de la carpeta."""
     out_path = Path(carpeta) / nombre
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
@@ -117,36 +172,46 @@ def guardar_excel(df: pd.DataFrame, carpeta: str, nombre: str = "resumen_consoli
                 len(str(cell.value)) if cell.value is not None else 0
                 for cell in col_cells
             )
-            ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 50)
+            ws.column_dimensions[col_cells[0].column_letter].width = min(
+                max_len + 4, 50
+            )
 
     return out_path
 
 
 # ── Ejecución directa ─────────────────────────────────────────────────────────
+# --------------------------------------------------
+def main():
+    """Make a jazz noise here"""
 
+    args = get_args()
+
+    try:
+        df = consolidar_carpeta(args.dir)
+        if df.empty:
+            sys.exit(0)
+
+        # Mostrar resultado en pantalla
+        pd.set_option("display.max_rows", None)
+        pd.set_option("display.width", 260)
+        pd.set_option("display.float_format", "{:,.2f}".format)
+
+        print("\n" + "=" * 80)
+        print("RESUMEN CONSOLIDADO")
+        print("=" * 80)
+        print(df.to_string(index=False))
+
+        # Guardar Excel
+        out = guardar_excel(df, args.dir)
+        print(f"\n💾  Excel guardado en: {out}")
+
+    except Exception as e:
+        print(f"Error al iniciar sesión: {e}")
+
+
+# --------------------------------------------------
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Uso: python consolidar_boletos.py <ruta_carpeta>")
-        print('Ej:  python consolidar_boletos.py "C:\\Boletos\\2026"')
-        sys.exit(1)
+    main()
+#     # From /veta_boletos_parser, ejecutar:
 
-    carpeta_arg = sys.argv[1]
-
-    df = consolidar_carpeta(carpeta_arg)
-
-    if df.empty:
-        sys.exit(0)
-
-    # Mostrar resultado en pantalla
-    pd.set_option("display.max_rows", None)
-    pd.set_option("display.width", 260)
-    pd.set_option("display.float_format", "{:,.2f}".format)
-
-    print("\n" + "=" * 80)
-    print("RESUMEN CONSOLIDADO")
-    print("=" * 80)
-    print(df.to_string(index=False))
-
-    # Guardar Excel
-    out = guardar_excel(df, carpeta_arg)
-    print(f"\n💾  Excel guardado en: {out}")
+#     # poetry run python -m consolidar_boletos
