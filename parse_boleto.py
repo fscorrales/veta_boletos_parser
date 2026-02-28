@@ -149,14 +149,53 @@ def parse_boleto(filepath):
         ops_this_block = []
 
         det_data = [r for r in det_t.find_all("tr") if not r.find("th")]
+        # for row in det_data:
+        #     cells = row.find_all("td")
+        #     if len(cells) < 4:
+        #         continue
+
+        #     cant_raw = cell_text(cells, idx_cant)
+        #     precio_raw = cell_text(cells, idx_precio)
+        #     bruto_raw = cell_text(cells, idx_bruto)
+        #     detalle = cell_text(cells, idx_detalle).upper().strip()
+        #     gasto_raw = cell_text(cells, idx_gasto)
+
+        #     if detalle == "ARANCEL":
+        #         arancel = to_float(gasto_raw)
+        #     elif detalle == "D.MERCADO":
+        #         d_mercado = to_float(gasto_raw)
+        #     elif detalle == "IMPORTE NETO":
+        #         importe_neto = to_float(gasto_raw)
+
+        #     cant_val = to_float(cant_raw)
+        #     precio_val = to_float(precio_raw)
+        #     bruto_val = to_float(bruto_raw)
+
+        #     if (
+        #         cant_val is not None
+        #         and "*" not in cant_raw
+        #         and precio_val is not None
+        #         and bruto_val is not None
+        #     ):
+        #         row_dict = {
+        #             "Fecha Concertación": fecha_conc,
+        #             "Fecha Liquidación": fecha_liq,
+        #             "Operación": operacion,
+        #             "Especie": especie,
+        #             "Cantidad": cant_val,
+        #             "Precio": precio_val,
+        #             "Importe Bruto": bruto_val,
+        #         }
+        #         operaciones_rows.append(row_dict)
+        #         ops_this_block.append(row_dict)
+
+        # ── Pasada 1: capturar gastos y signo ────────────────────────────────────
+        arancel = d_mercado = importe_neto = None
+
         for row in det_data:
             cells = row.find_all("td")
             if len(cells) < 4:
                 continue
-
-            cant_raw = cell_text(cells, idx_cant)
-            precio_raw = cell_text(cells, idx_precio)
-            bruto_raw = cell_text(cells, idx_bruto)
             detalle = cell_text(cells, idx_detalle).upper().strip()
             gasto_raw = cell_text(cells, idx_gasto)
 
@@ -166,6 +205,20 @@ def parse_boleto(filepath):
                 d_mercado = to_float(gasto_raw)
             elif detalle == "IMPORTE NETO":
                 importe_neto = to_float(gasto_raw)
+
+        signo = -1 if importe_neto and importe_neto < 0 else 1
+
+        # ── Pasada 2: armar filas de operaciones con signo correcto ──────────────
+        ops_this_block = []
+
+        for row in det_data:
+            cells = row.find_all("td")
+            if len(cells) < 4:
+                continue
+
+            cant_raw = cell_text(cells, idx_cant)
+            precio_raw = cell_text(cells, idx_precio)
+            bruto_raw = cell_text(cells, idx_bruto)
 
             cant_val = to_float(cant_raw)
             precio_val = to_float(precio_raw)
@@ -182,9 +235,9 @@ def parse_boleto(filepath):
                     "Fecha Liquidación": fecha_liq,
                     "Operación": operacion,
                     "Especie": especie,
-                    "Cantidad": cant_val,
+                    "Cantidad": signo * cant_val,
                     "Precio": precio_val,
-                    "Importe Bruto": bruto_val,
+                    "Importe Bruto": signo * bruto_val,
                 }
                 operaciones_rows.append(row_dict)
                 ops_this_block.append(row_dict)
