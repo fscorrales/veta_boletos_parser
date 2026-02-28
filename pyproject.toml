@@ -1,0 +1,17 @@
+[project]
+name = "veta-boletos-parser"
+version = "0.1.0"
+description = "Python parser for HTML trade confirmation reports (\"boletos\") issued by Veta Capital S.A. Extracts individual operations and generates per-instrument summaries including gross amount, fees, and net settlement, with support for batch processing across multiple files."
+authors = [
+    {name = "Fernando Corrales",email = "fscpython@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
