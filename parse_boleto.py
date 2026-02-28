@@ -1,152 +1,182 @@
 """
-consolidar_boletos.py
----------------------
-Procesa todos los archivos HTML de boletos VETA/ByMA contenidos en una carpeta
-y consolida los resúmenes de cada uno en un único DataFrame.
-
-Requiere que parse_boleto.py esté en la misma carpeta que este script.
-
-Uso desde la terminal de Windows:
-    python consolidar_boletos.py "C:\\Users\\Fernando\\Documentos\\Boletos"
-
-Uso desde Python (importando la función):
-    from consolidar_boletos import consolidar_carpeta
-    df = consolidar_carpeta("C:/Users/Fernando/Documentos/Boletos")
-
-Salida:
-    - Imprime el DataFrame consolidado en pantalla.
-    - Guarda un Excel "resumen_consolidado.xlsx" dentro de la misma carpeta.
+parse_boleto.py
+Lee el HTML de boletos de VETA/ByMA y construye dos DataFrames.
 """
 
 import sys
 from pathlib import Path
 
 import pandas as pd
-
-# Importar la función de parseo del script anterior
-from parse_boleto import parse_boleto
+from bs4 import BeautifulSoup
 
 
-def consolidar_carpeta(carpeta: str, extensiones=(".htm", ".html")) -> pd.DataFrame:
-    """
-    Lee todos los archivos HTML de `carpeta` y fusiona los DataFrames de
-    resumen en uno solo.
+def to_float(text):
+    if not text:
+        return None
+    cleaned = text.strip().lstrip("$").replace(",", "").replace("*", "").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
 
-    Parámetros
-    ----------
-    carpeta     : str o Path — ruta a la carpeta con los archivos HTML.
-    extensiones : tupla de extensiones a buscar (insensible a mayúsculas).
 
-    Retorna
-    -------
-    pd.DataFrame con el resumen consolidado de todos los boletos,
-    ordenado por Fecha Concertación + Especie + Operación.
-    Incluye la columna "Archivo" para identificar el origen de cada fila.
-    """
-    carpeta = Path(carpeta)
+def cell_text(cells, idx):
+    try:
+        return cells[idx].get_text(strip=True)
+    except IndexError:
+        return ""
 
-    if not carpeta.exists():
-        raise FileNotFoundError(f"La carpeta no existe: {carpeta}")
-    if not carpeta.is_dir():
-        raise NotADirectoryError(f"La ruta no es una carpeta: {carpeta}")
 
-    # Buscar archivos HTML (case-insensitive en la extensión)
-    archivos = [
-        f for f in sorted(carpeta.iterdir())
-        if f.is_file() and f.suffix.lower() in extensiones
-    ]
+def th_names(table):
+    return [th.get_text(strip=True) for th in table.find_all("th")]
 
-    if not archivos:
-        print(f"⚠  No se encontraron archivos HTML en: {carpeta}")
-        return pd.DataFrame()
 
-    print(f"📂  Carpeta: {carpeta}")
-    print(f"📄  Archivos encontrados: {len(archivos)}\n")
+CAB_REQUIRED = {"Fecha Concertación", "Especie", "Operación"}
+DET_REQUIRED = {"Cantidad", "Precio", "Importe Bruto", "Detalle", "Gasto"}
 
-    resumenes = []
-    errores   = []
 
-    for archivo in archivos:
-        try:
-            _, df_res = parse_boleto(str(archivo))
+def parse_boleto(filepath):
+    html = Path(filepath).read_text(encoding="utf-8-sig")
+    soup = BeautifulSoup(html, "html.parser")
 
-            if df_res.empty:
-                print(f"  ⚠  Sin datos: {archivo.name}")
+    cab_tables = []
+    det_tables = []
+
+    for t in soup.find_all("table"):
+        hs = th_names(t)
+        hs_set = set(hs)
+        if len(hs) == 5 and CAB_REQUIRED.issubset(hs_set):
+            cab_tables.append(t)
+        elif len(hs) == 11 and DET_REQUIRED.issubset(hs_set):
+            det_tables.append(t)
+
+    if len(cab_tables) != len(det_tables):
+        print(f"⚠  {len(cab_tables)} tablas cabecera / {len(det_tables)} tablas detalle")
+
+    n = min(len(cab_tables), len(det_tables))
+    operaciones_rows = []
+    resumen_rows = []
+
+    for cab_t, det_t in zip(cab_tables[:n], det_tables[:n]):
+
+        cab_hs = th_names(cab_t)
+        cab_data = [r for r in cab_t.find_all("tr") if not r.find("th")]
+        if not cab_data:
+            continue
+        cells_cab = cab_data[0].find_all("td")
+
+        def get_cab(col):
+            try:
+                return cells_cab[cab_hs.index(col)].get_text(strip=True)
+            except (ValueError, IndexError):
+                return ""
+
+        fecha_conc = get_cab("Fecha Concertación")
+        fecha_liq  = get_cab("Fecha Liquidación")
+        operacion  = get_cab("Operación").strip()
+        especie    = get_cab("Especie")
+
+        det_hs = th_names(det_t)
+        idx_cant    = det_hs.index("Cantidad")      if "Cantidad"      in det_hs else 0
+        idx_precio  = det_hs.index("Precio")        if "Precio"        in det_hs else 1
+        idx_bruto   = det_hs.index("Importe Bruto") if "Importe Bruto" in det_hs else 2
+        idx_detalle = det_hs.index("Detalle")       if "Detalle"       in det_hs else 8
+        idx_gasto   = det_hs.index("Gasto")         if "Gasto"         in det_hs else 10
+
+        arancel = d_mercado = importe_neto = None
+        ops_this_block = []
+
+        det_data = [r for r in det_t.find_all("tr") if not r.find("th")]
+        for row in det_data:
+            cells = row.find_all("td")
+            if len(cells) < 4:
                 continue
 
-            # Agregar columna con el nombre del archivo origen
-            df_res.insert(0, "Archivo", archivo.name)
-            resumenes.append(df_res)
-            print(f"  ✅  {archivo.name:45s} → {len(df_res)} fila(s)")
+            cant_raw   = cell_text(cells, idx_cant)
+            precio_raw = cell_text(cells, idx_precio)
+            bruto_raw  = cell_text(cells, idx_bruto)
+            detalle    = cell_text(cells, idx_detalle).upper().strip()
+            gasto_raw  = cell_text(cells, idx_gasto)
 
-        except Exception as e:
-            errores.append(archivo.name)
-            print(f"  ❌  {archivo.name:45s} → ERROR: {e}")
+            if detalle == "ARANCEL":
+                arancel = to_float(gasto_raw)
+            elif detalle == "D.MERCADO":
+                d_mercado = to_float(gasto_raw)
+            elif detalle == "IMPORTE NETO":
+                importe_neto = to_float(gasto_raw)
 
-    if not resumenes:
-        print("\n⚠  No se pudo procesar ningún archivo.")
-        return pd.DataFrame()
+            cant_val   = to_float(cant_raw)
+            precio_val = to_float(precio_raw)
+            bruto_val  = to_float(bruto_raw)
 
-    # Consolidar
-    df_consolidado = pd.concat(resumenes, ignore_index=True)
+            if (
+                cant_val is not None
+                and "*" not in cant_raw
+                and precio_val is not None
+                and bruto_val is not None
+            ):
+                row_dict = {
+                    "Fecha Concertación": fecha_conc,
+                    "Fecha Liquidación":  fecha_liq,
+                    "Operación":          operacion,
+                    "Especie":            especie,
+                    "Cantidad":           cant_val,
+                    "Precio":             precio_val,
+                    "Importe Bruto":      bruto_val,
+                }
+                operaciones_rows.append(row_dict)
+                ops_this_block.append(row_dict)
 
-    # Ordenar cronológicamente
-    df_consolidado.sort_values(
-        by=["Fecha Concertación", "Especie", "Operación"],
-        inplace=True,
-        ignore_index=True,
-    )
+        total_cant  = sum(r["Cantidad"]      for r in ops_this_block)
+        total_bruto = sum(r["Importe Bruto"] for r in ops_this_block)
+        precio_prom = round(total_bruto / total_cant, 6) if total_cant else None
 
-    if errores:
-        print(f"\n⚠  Archivos con error ({len(errores)}): {', '.join(errores)}")
+        resumen_rows.append({
+            "Fecha Concertación":  fecha_conc,
+            "Fecha Liquidación":   fecha_liq,
+            "Operación":           operacion,
+            "Especie":             especie,
+            "Cantidad Total":      total_cant,
+            "Precio Prom. Pond.":  precio_prom,
+            "Importe Bruto Total": total_bruto,
+            "Arancel":             arancel,
+            "D.Mercado":           d_mercado,
+            "Importe Neto":        importe_neto,
+        })
 
-    print(f"\n📊  Total de filas consolidadas: {len(df_consolidado)}")
-    return df_consolidado
+    df_ops = pd.DataFrame(operaciones_rows)
+    df_res = pd.DataFrame(resumen_rows)
 
+    for df in (df_ops, df_res):
+        for col in ("Fecha Concertación", "Fecha Liquidación"):
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], format="%d/%m/%y", errors="coerce")
 
-def guardar_excel(df: pd.DataFrame, carpeta: str, nombre: str = "resumen_consolidado.xlsx") -> Path:
-    """Guarda el DataFrame consolidado en un Excel dentro de la carpeta."""
-    out_path = Path(carpeta) / nombre
-    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Resumen Consolidado", index=False)
+    return df_ops, df_res
 
-        # Autoajustar ancho de columnas
-        ws = writer.sheets["Resumen Consolidado"]
-        for col_cells in ws.columns:
-            max_len = max(
-                len(str(cell.value)) if cell.value is not None else 0
-                for cell in col_cells
-            )
-            ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 50)
-
-    return out_path
-
-
-# ── Ejecución directa ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Uso: python consolidar_boletos.py <ruta_carpeta>")
-        print('Ej:  python consolidar_boletos.py "C:\\Boletos\\2026"')
-        sys.exit(1)
+    filepath = sys.argv[1] if len(sys.argv) > 1 else "20260227-B44881.HTM"
 
-    carpeta_arg = sys.argv[1]
+    df_ops, df_res = parse_boleto(filepath)
 
-    df = consolidar_carpeta(carpeta_arg)
-
-    if df.empty:
-        sys.exit(0)
-
-    # Mostrar resultado en pantalla
     pd.set_option("display.max_rows", None)
-    pd.set_option("display.width", 260)
-    pd.set_option("display.float_format", "{:,.2f}".format)
+    pd.set_option("display.width", 220)
+    pd.set_option("display.float_format", "{:,.4f}".format)
 
-    print("\n" + "=" * 80)
-    print("RESUMEN CONSOLIDADO")
     print("=" * 80)
-    print(df.to_string(index=False))
+    print("DataFrame 1 — Operaciones individuales")
+    print("=" * 80)
+    print(df_ops.to_string(index=False))
 
-    # Guardar Excel
-    out = guardar_excel(df, carpeta_arg)
-    print(f"\n💾  Excel guardado en: {out}")
+    print()
+    print("=" * 80)
+    print("DataFrame 2 — Resumen por Especie / Bloque")
+    print("=" * 80)
+    print(df_res.to_string(index=False))
+
+    out_xlsx = Path(filepath).stem + "_parsed.xlsx"
+    with pd.ExcelWriter(out_xlsx, engine="openpyxl") as writer:
+        df_ops.to_excel(writer, sheet_name="Operaciones", index=False)
+        df_res.to_excel(writer, sheet_name="Resumen por Especie", index=False)
+    print(f"\n✅  Exportado a: {out_xlsx}")
